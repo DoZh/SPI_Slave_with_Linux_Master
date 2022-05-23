@@ -97,7 +97,13 @@ int main(void)
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
+	uint8_t testDataToSend[1024];
 
+	for (uint8_t i = 0; i < 255; i++)
+	{
+			testDataToSend[i] = i + 1;
+	}
+	HAL_SPI_Transmit_DMA(&hspi2, testDataToSend, 255);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -277,6 +283,38 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+
+/**
+  * @brief  Tx Transfer completed callback.
+  * @param  hspi pointer to a SPI_HandleTypeDef structure that contains
+  *               the configuration information for SPI module.
+  * @retval None
+  */
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(hspi);
+	HAL_GPIO_TogglePin(LED_Y_GPIO_Port, LED_Y_Pin);
+
+}
+
+/**
+  * @brief  Rx Transfer completed callback.
+  * @param  hspi pointer to a SPI_HandleTypeDef structure that contains
+  *               the configuration information for SPI module.
+  * @retval None
+  */
+void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(hspi);
+	HAL_GPIO_TogglePin(LED_Y_GPIO_Port, LED_Y_Pin);
+
+}
+
+
+
 
 /* USER CODE END 4 */
 
