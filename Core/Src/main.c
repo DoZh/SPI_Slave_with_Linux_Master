@@ -32,6 +32,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MAX_PACKET_LENGTH 1096
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,6 +48,9 @@ DMA_HandleTypeDef hdma_spi2_rx;
 DMA_HandleTypeDef hdma_spi2_tx;
 
 /* USER CODE BEGIN PV */
+uint8_t sendBuff[MAX_PACKET_LENGTH];
+uint8_t recvBuff[MAX_PACKET_LENGTH];
+
 
 /* USER CODE END PV */
 
@@ -58,7 +62,9 @@ static void MX_SPI2_Init(void);
 static void MX_CRC_Init(void);
 static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Start_Packet_Transmit(SPI_HandleTypeDef *hspi);
+void Waiting_to_Receive_Packet(SPI_HandleTypeDef *hspi);
+void Stop_Waiting_Packet(SPI_HandleTypeDef *hspi);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -101,14 +107,17 @@ int main(void)
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
-	uint8_t testDataToSend[1024];
+
 
 	for (uint8_t i = 0; i < 255; i++)
 	{
-			testDataToSend[i] = i + 1;
+			sendBuff[i] = i + 1;
 	}
-	//HAL_SPI_Transmit_DMA(&hspi2, testDataToSend, 255);
-	HAL_SPI_Receive_DMA(&hspi2, testDataToSend, 255);
+	//HAL_SPI_Transmit_DMA(&hspi2, sendBuff, 255);
+	
+	Waiting_to_Receive_Packet(&hspi2);
+	Start_Packet_Transmit(&hspi2);
+	//Waiting_to_Receive_Packet(&hspi2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -323,8 +332,8 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
   /* Prevent unused argument(s) compilation warning */
   UNUSED(hspi);
-	HAL_GPIO_TogglePin(LED_Y_GPIO_Port, LED_Y_Pin);
-
+	HAL_GPIO_TogglePin(LED_B_GPIO_Port, LED_B_Pin);
+  Waiting_to_Receive_Packet(hspi);
 }
 
 /**
@@ -336,13 +345,36 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
 {
   /* Prevent unused argument(s) compilation warning */
-  UNUSED(hspi);
-	HAL_GPIO_TogglePin(LED_Y_GPIO_Port, LED_Y_Pin);
 
+	HAL_GPIO_TogglePin(LED_Y_GPIO_Port, LED_Y_Pin);
+	Waiting_to_Receive_Packet(hspi);
 }
 
+void Start_Packet_Transmit(SPI_HandleTypeDef *hspi)
+{
+	// TODO: wait bus free
+		Stop_Waiting_Packet(hspi);
+		HAL_SPI_Transmit_DMA(hspi, sendBuff, MAX_PACKET_LENGTH); 
+		//will call Waiting_to_Receive_Packet at Tx complete
+}
 
+void Waiting_to_Receive_Packet(SPI_HandleTypeDef *hspi)
+{
+		// TODO: wait bus free
+		HAL_SPI_Receive_DMA(hspi, recvBuff, MAX_PACKET_LENGTH);
+}
 
+void Stop_Waiting_Packet(SPI_HandleTypeDef *hspi)
+{
+		//__disable_irq(); 
+/* might not be necessary */
+ //hspi->hdmarx->XferCpltCallback = NULL;
+	
+ HAL_SPI_DMAStop(hspi);
+	
+ //__enable_irq(); 
+/* might not be necessary */
+}
 
 /* USER CODE END 4 */
 
