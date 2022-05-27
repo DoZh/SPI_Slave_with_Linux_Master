@@ -33,6 +33,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define MAX_PACKET_LENGTH 1096
+#define REQ_MASTER_INT() HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_RESET)
+#define CLR_MASTER_INT() HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_SET)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -42,6 +44,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 CRC_HandleTypeDef hcrc;
+
+RNG_HandleTypeDef hrng;
 
 SPI_HandleTypeDef hspi2;
 DMA_HandleTypeDef hdma_spi2_rx;
@@ -60,16 +64,18 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_CRC_Init(void);
+static void MX_RNG_Init(void);
 static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 void Start_Packet_Transmit(SPI_HandleTypeDef *hspi);
-void Waiting_to_Receive_Packet(SPI_HandleTypeDef *hspi);
+void Async_Waiting_to_Receive_Packet(SPI_HandleTypeDef *hspi);
 void Stop_Waiting_Packet(SPI_HandleTypeDef *hspi);
+void Blocking_Waiting_to_Bus_Free(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+int8_t NEED_CALL_Start_Packet_Transmit = 0;
 /* USER CODE END 0 */
 
 /**
@@ -103,21 +109,22 @@ int main(void)
   MX_DMA_Init();
   MX_SPI2_Init();
   MX_CRC_Init();
+  MX_RNG_Init();
 
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
 
-
+	HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_SET);
 	for (uint8_t i = 0; i < 255; i++)
 	{
 			sendBuff[i] = i + 1;
 	}
 	//HAL_SPI_Transmit_DMA(&hspi2, sendBuff, 255);
+
+	Async_Waiting_to_Receive_Packet(&hspi2);
 	
-	Waiting_to_Receive_Packet(&hspi2);
-	Start_Packet_Transmit(&hspi2);
-	//Waiting_to_Receive_Packet(&hspi2);
+	//Async_Waiting_to_Receive_Packet(&hspi2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -127,6 +134,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+		
+		if (NEED_CALL_Start_Packet_Transmit) {
+			Start_Packet_Transmit(&hspi2);
+			NEED_CALL_Start_Packet_Transmit = 0;
+		}
   }
   /* USER CODE END 3 */
 }
@@ -156,7 +168,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLM = 12;
   RCC_OscInitStruct.PLL.PLLN = 336;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLQ = 7;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -219,6 +231,32 @@ static void MX_CRC_Init(void)
 }
 
 /**
+  * @brief RNG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RNG_Init(void)
+{
+
+  /* USER CODE BEGIN RNG_Init 0 */
+
+  /* USER CODE END RNG_Init 0 */
+
+  /* USER CODE BEGIN RNG_Init 1 */
+
+  /* USER CODE END RNG_Init 1 */
+  hrng.Instance = RNG;
+  if (HAL_RNG_Init(&hrng) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RNG_Init 2 */
+
+  /* USER CODE END RNG_Init 2 */
+
+}
+
+/**
   * @brief SPI2 Initialization Function
   * @param None
   * @retval None
@@ -277,15 +315,25 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_Y_GPIO_Port, LED_Y_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_B_GPIO_Port, LED_B_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : INT_REQ_Pin */
+  GPIO_InitStruct.Pin = INT_REQ_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(INT_REQ_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PC9 */
   GPIO_InitStruct.Pin = GPIO_PIN_9;
@@ -332,8 +380,9 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
   /* Prevent unused argument(s) compilation warning */
   UNUSED(hspi);
+	CLR_MASTER_INT();
 	HAL_GPIO_TogglePin(LED_B_GPIO_Port, LED_B_Pin);
-  Waiting_to_Receive_Packet(hspi);
+  Async_Waiting_to_Receive_Packet(hspi);
 }
 
 /**
@@ -347,18 +396,22 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
   /* Prevent unused argument(s) compilation warning */
 
 	HAL_GPIO_TogglePin(LED_Y_GPIO_Port, LED_Y_Pin);
-	Waiting_to_Receive_Packet(hspi);
+	//Async_Waiting_to_Receive_Packet(hspi);
+	NEED_CALL_Start_Packet_Transmit = 1; 
 }
 
 void Start_Packet_Transmit(SPI_HandleTypeDef *hspi)
 {
-	// TODO: wait bus free
+	// should not call it at callback, this func may be blocking by bus busy
+		Blocking_Waiting_to_Bus_Free();
 		Stop_Waiting_Packet(hspi);
 		HAL_SPI_Transmit_DMA(hspi, sendBuff, MAX_PACKET_LENGTH); 
-		//will call Waiting_to_Receive_Packet at Tx complete
+		REQ_MASTER_INT();
+
+		//will call Async_Waiting_to_Receive_Packet at Tx complete
 }
 
-void Waiting_to_Receive_Packet(SPI_HandleTypeDef *hspi)
+void Async_Waiting_to_Receive_Packet(SPI_HandleTypeDef *hspi)
 {
 		// TODO: wait bus free
 		HAL_SPI_Receive_DMA(hspi, recvBuff, MAX_PACKET_LENGTH);
@@ -369,12 +422,21 @@ void Stop_Waiting_Packet(SPI_HandleTypeDef *hspi)
 		//__disable_irq(); 
 /* might not be necessary */
  //hspi->hdmarx->XferCpltCallback = NULL;
-	
- HAL_SPI_DMAStop(hspi);
-	
+	if(HAL_SPI_GetState(hspi) == HAL_SPI_STATE_BUSY_RX) {
+		HAL_SPI_DMAStop(hspi);
+	}
  //__enable_irq(); 
 /* might not be necessary */
 }
+
+void Blocking_Waiting_to_Bus_Free()
+{
+	if(HAL_GPIO_ReadPin(SPI_NSS_GPIO_Port, SPI_NSS_Pin) == GPIO_PIN_RESET) {
+		HAL_Delay(1);
+	}
+	
+}
+
 
 /* USER CODE END 4 */
 
