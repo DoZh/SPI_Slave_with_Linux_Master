@@ -41,9 +41,9 @@
 #define PAYLOAD_COUNT_LENGTH 2
 #define MAX_PAYLOAD_LENGTH 1024
 #define VERIFY_LENGTH 4
-#define HEAD_LENGTH PREAMBLE_LENGTH + SERIAL_NO_LENGTH + DATA_DESC_LENGTH + PAYLOAD_COUNT_LENGTH //68
+#define HEAD_LENGTH (PREAMBLE_LENGTH + SERIAL_NO_LENGTH + DATA_DESC_LENGTH + PAYLOAD_COUNT_LENGTH) //68
 #define PAYLOAD_SHIFT HEAD_LENGTH
-#define MAX_PACKET_LENGTH HEAD_LENGTH + MAX_PAYLOAD_LENGTH + VERIFY_LENGTH //1096
+#define MAX_PACKET_LENGTH (HEAD_LENGTH + MAX_PAYLOAD_LENGTH + VERIFY_LENGTH) //1096
 
 #define REQ_MASTER_INT() HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_RESET)
 #define CLR_MASTER_INT() HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_SET)
@@ -66,7 +66,7 @@ DMA_HandleTypeDef hdma_spi2_tx;
 /* USER CODE BEGIN PV */
 uint8_t sendBuff[MAX_PACKET_LENGTH] = {0};
 uint8_t recvBuff[MAX_PACKET_LENGTH] = {0};
-
+uint8_t crc32Buff[MAX_PACKET_LENGTH] = {0};
 
 /* USER CODE END PV */
 
@@ -83,6 +83,9 @@ void Start_Packet_Transmit(SPI_HandleTypeDef *hspi);
 void Async_Waiting_to_Receive_Packet(SPI_HandleTypeDef *hspi);
 void Stop_Waiting_Packet(SPI_HandleTypeDef *hspi);
 void Blocking_Waiting_to_Bus_Free(void);
+
+unsigned int reverse(unsigned int x);
+unsigned int reverse_in_byte(unsigned int x);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -418,7 +421,7 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
 void Start_Packet_Transmit(SPI_HandleTypeDef *hspi)
 {
 	// should not call it at callback, this func may be blocking by bus busy
-		int count = 5;
+		int count = 0;
 		uint8_t *databuf; 
 	
 		static uint8_t serial_no = 0;
@@ -445,7 +448,79 @@ void Start_Packet_Transmit(SPI_HandleTypeDef *hspi)
 		
 		uint8_t test_str[] = "UUUUUUUUUUUUUUUU";
 		//checksum = HAL_CRC_Calculate(&hcrc, (uint32_t *)sendBuff, (PAYLOAD_SHIFT + count)>>2);
-		checksum = HAL_CRC_Calculate(&hcrc, (uint32_t *)test_str, 4);
+		
+		
+		count = 13 - PAYLOAD_SHIFT;  //for test
+		uint16_t crc32_calc_length = 0;
+
+		/*   
+					code in switch section use a 32 bits magic num to do a pre-calc and fill some leading zero,  
+				to make the silly crc calc module can work with data length not align to 32 bits.
+		
+					the result is same as commom crc32 algorithm, which use: 
+				POLY 0x04C11DB7, INIT 0xFFFFFFFF, REFIN true, REFOUT true, XOROUT 0xFFFFFFFF.
+		
+					In my view, the hardware module calc crc32 with REFIN false, REFOUT false, XOROUT 0x00000000, 
+				so I need to do those operation by write some code to make crc-32 result same as commom crc32 algorithm.
+		    If we want to got correct result on this MCU, input data need to be reversed by 32bits, not 8bit like others said. 
+				maybe cause by the crc-32 module use big endian for each 4bytes.
+		*/
+		switch ((PAYLOAD_SHIFT + count) % 4)
+		{
+				case 0: 
+					crc32_calc_length = (PAYLOAD_SHIFT + count) >> 2;
+					for (int i = 0; i < crc32_calc_length; i++) {
+						*(uint32_t *)(crc32Buff + (i << 2)) = reverse(*(uint32_t *)(test_str + (i << 2)));
+					}
+					checksum = ~reverse(HAL_CRC_Calculate(&hcrc, (uint32_t *)crc32Buff, crc32_calc_length));
+					break;
+				case 1: 
+					crc32_calc_length = ((PAYLOAD_SHIFT + count) >> 2) + 1;
+					crc32Buff[0] = 0;
+					crc32Buff[1] = 0;
+					crc32Buff[2] = 0;
+					crc32Buff[3] = test_str[0];
+					*(uint32_t *)(crc32Buff + 0) = reverse(*(uint32_t *)(crc32Buff + 0));
+					for (int i = 1; i < crc32_calc_length; i++) {
+						*(uint32_t *)(crc32Buff + (i << 2)) = reverse(*(uint32_t *)(test_str + (i << 2) - 3));
+					}
+					__HAL_CRC_DR_RESET(&hcrc);
+					hcrc.Instance->DR = 0x6AA59E9D; // <-- CRC_CalcCRC 0x6AA59E9D;
+					checksum = ~reverse(HAL_CRC_Accumulate(&hcrc, (uint32_t *)crc32Buff, crc32_calc_length));
+					break;
+				
+				case 2: 
+					crc32_calc_length = ((PAYLOAD_SHIFT + count) >> 2) + 1;
+					crc32Buff[0] = 0;
+					crc32Buff[1] = 0;
+					crc32Buff[2] = test_str[0];
+					crc32Buff[3] = test_str[1];
+					*(uint32_t *)(crc32Buff + 0) = reverse(*(uint32_t *)(crc32Buff + 0));
+					for (int i = 1; i < crc32_calc_length; i++) {
+						*(uint32_t *)(crc32Buff + (i << 2)) = reverse(*(uint32_t *)(test_str + (i << 2) - 2));
+					}
+					__HAL_CRC_DR_RESET(&hcrc);
+					hcrc.Instance->DR = 0x9746CD0A; // <-- CRC_CalcCRC 0x9746CD0A;
+					checksum = ~reverse(HAL_CRC_Accumulate(&hcrc, (uint32_t *)crc32Buff, crc32_calc_length));
+					break;
+				
+				case 3: 
+					crc32_calc_length = ((PAYLOAD_SHIFT + count) >> 2) + 1;
+					crc32Buff[0] = 0;
+					crc32Buff[1] = test_str[0];
+					crc32Buff[2] = test_str[1];
+					crc32Buff[3] = test_str[2];
+					*(uint32_t *)(crc32Buff + 0) = reverse(*(uint32_t *)(crc32Buff + 0));
+					for (int i = 1; i < crc32_calc_length; i++) {
+						*(uint32_t *)(crc32Buff + (i << 2)) = reverse(*(uint32_t *)(test_str + (i << 2) - 1));
+					}
+					__HAL_CRC_DR_RESET(&hcrc);
+					hcrc.Instance->DR = 0xCC6021D0; // <-- CRC_CalcCRC 0xCC6021D0;
+					checksum = ~reverse(HAL_CRC_Accumulate(&hcrc, (uint32_t *)crc32Buff, crc32_calc_length));
+					break;
+		}
+		
+
 		*(uint32_t *)(sendBuff + PAYLOAD_SHIFT + count) = checksum; //check align!
 
 
@@ -484,6 +559,22 @@ void Blocking_Waiting_to_Bus_Free()
 	
 }
 
+
+inline unsigned int reverse(unsigned int x)
+{
+    x = (((x & 0xaaaaaaaa) >> 1) | ((x & 0x55555555) << 1));
+    x = (((x & 0xcccccccc) >> 2) | ((x & 0x33333333) << 2));
+    x = (((x & 0xf0f0f0f0) >> 4) | ((x & 0x0f0f0f0f) << 4));
+    x = (((x & 0xff00ff00) >> 8) | ((x & 0x00ff00ff) << 8));
+    return((x >> 16) | (x << 16));
+}
+
+inline unsigned int reverse_in_byte(unsigned int x)
+{
+    x = (((x & 0xaaaaaaaa) >> 1) | ((x & 0x55555555) << 1));
+    x = (((x & 0xcccccccc) >> 2) | ((x & 0x33333333) << 2));
+    return (((x & 0xf0f0f0f0) >> 4) | ((x & 0x0f0f0f0f) << 4));
+}
 
 /* USER CODE END 4 */
 
