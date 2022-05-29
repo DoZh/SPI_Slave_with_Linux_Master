@@ -32,7 +32,19 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define MAX_PACKET_LENGTH 1096
+#define min(a,b) (((a) < (b)) ? (a) : (b))
+#define max(a,b) (((a) > (b)) ? (a) : (b))
+
+#define PREAMBLE_LENGTH 1
+#define SERIAL_NO_LENGTH 1
+#define DATA_DESC_LENGTH 64
+#define PAYLOAD_COUNT_LENGTH 2
+#define MAX_PAYLOAD_LENGTH 1024
+#define VERIFY_LENGTH 4
+#define HEAD_LENGTH PREAMBLE_LENGTH + SERIAL_NO_LENGTH + DATA_DESC_LENGTH + PAYLOAD_COUNT_LENGTH //68
+#define PAYLOAD_SHIFT HEAD_LENGTH
+#define MAX_PACKET_LENGTH HEAD_LENGTH + MAX_PAYLOAD_LENGTH + VERIFY_LENGTH //1096
+
 #define REQ_MASTER_INT() HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_RESET)
 #define CLR_MASTER_INT() HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_SET)
 /* USER CODE END PD */
@@ -52,8 +64,8 @@ DMA_HandleTypeDef hdma_spi2_rx;
 DMA_HandleTypeDef hdma_spi2_tx;
 
 /* USER CODE BEGIN PV */
-uint8_t sendBuff[MAX_PACKET_LENGTH];
-uint8_t recvBuff[MAX_PACKET_LENGTH];
+uint8_t sendBuff[MAX_PACKET_LENGTH] = {0};
+uint8_t recvBuff[MAX_PACKET_LENGTH] = {0};
 
 
 /* USER CODE END PV */
@@ -115,13 +127,16 @@ int main(void)
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
 
+/*
 	HAL_GPIO_WritePin(INT_REQ_GPIO_Port, INT_REQ_Pin, GPIO_PIN_SET);
-	for (uint8_t i = 0; i < 255; i++)
+	for (uint16_t i = 0; i < 1024; i++)
 	{
-			sendBuff[i] = i + 1;
+			sendBuff[i] = (uint8_t)(i & 0xFF);
 	}
+	*/
 	//HAL_SPI_Transmit_DMA(&hspi2, sendBuff, 255);
-
+	
+	//TODO: sync operation needed.
 	Async_Waiting_to_Receive_Packet(&hspi2);
 	
 	//Async_Waiting_to_Receive_Packet(&hspi2);
@@ -403,6 +418,38 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
 void Start_Packet_Transmit(SPI_HandleTypeDef *hspi)
 {
 	// should not call it at callback, this func may be blocking by bus busy
+		int count = 5;
+		uint8_t *databuf; 
+	
+		static uint8_t serial_no = 0;
+		uint32_t checksum;
+	
+		// pre_head 0xAA + serial no(1 Byte) + custom data descriptor(64 Bytes) + payload length(2 bytes, count by bytes) + payload(0~1024 Bytes) + CRC32
+		sendBuff[0] = 0xAA;
+		sendBuff[PREAMBLE_LENGTH] = serial_no++;
+		count = min(count, (size_t)MAX_PAYLOAD_LENGTH); // use little endian to save payload length 
+		 *(uint16_t *)(sendBuff + PAYLOAD_SHIFT - 2) = count; //check align!
+		//buf[PAYLOAD_SHIFT - 2] = (uint8_t)(count & 0xFF);
+		//buf[PAYLOAD_SHIFT - 1] = (uint8_t)((count >> 8) & 0xFF);
+
+		//for test
+		uint8_t *dataptr = sendBuff + PAYLOAD_SHIFT;
+		uint8_t data = 0;
+		for (int datacount = 0 ; datacount < 1024; datacount++)
+		{
+				*dataptr++ = data++;
+		}
+		
+		
+		//memcpy(sendBuff + PAYLOAD_SHIFT, databuf, count);
+		
+		uint8_t test_str[] = "UUUUUUUUUUUUUUUU";
+		//checksum = HAL_CRC_Calculate(&hcrc, (uint32_t *)sendBuff, (PAYLOAD_SHIFT + count)>>2);
+		checksum = HAL_CRC_Calculate(&hcrc, (uint32_t *)test_str, 4);
+		*(uint32_t *)(sendBuff + PAYLOAD_SHIFT + count) = checksum; //check align!
+
+
+		
 		Blocking_Waiting_to_Bus_Free();
 		Stop_Waiting_Packet(hspi);
 		HAL_SPI_Transmit_DMA(hspi, sendBuff, MAX_PACKET_LENGTH); 
